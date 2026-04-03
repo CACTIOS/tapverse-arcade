@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>TapVerse Arcade</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --p: #6366f1; --s: #a855f7; --bg: #0f172a; --c: #1e293b; --t: #f8fafc; --gold: #fbbf24;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body { background: var(--bg); color: var(--t); font-family: sans-serif; overflow: hidden; touch-action: none; }
+        header { padding: 1rem; background: var(--c); display: flex; justify-content: space-between; align-items: center; z-index: 50; }
+        .xp-pill { background: rgba(0,0,0,0.3); padding: 4px 12px; border-radius: 20px; width: 120px; }
+        .xp-track { height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+        #ui-xp-bar { height: 100%; background: linear-gradient(90deg, var(--p), var(--s)); width: 0%; transform-origin: left; transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1); }
+        #main-menu { padding: 1.5rem; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 1.2rem; }
+        .game-card { background: var(--c); aspect-ratio: 1; border-radius: 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; border: 1px solid rgba(255,255,255,0.05); }
+        .game-card i { font-size: 2.5rem; margin-bottom: 0.5rem; color: var(--p); }
+        .game-card.locked { filter: grayscale(1) brightness(0.4); }
+        #stage { position: fixed; inset: 0; background: #000; display: none; z-index: 100; }
+        canvas { width: 100%; height: 100%; display: block; }
+        .hud { position: absolute; top: 0; left: 0; width: 100%; padding: 1rem; display: flex; justify-content: space-between; pointer-events: none; }
+        .hud-item { background: rgba(0,0,0,0.6); padding: 8px 15px; border-radius: 20px; pointer-events: auto; }
+        .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: none; align-items: center; justify-content: center; z-index: 200; backdrop-filter: blur(10px); }
+        .overlay.active { display: flex; }
+        .modal { background: var(--c); padding: 2rem; border-radius: 25px; text-align: center; width: 85%; max-width: 400px; }
+        .btn { background: var(--p); color: #fff; border: none; padding: 1rem; border-radius: 12px; width: 100%; margin-top: 10px; font-weight: bold; cursor: pointer; }
+        .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--p); padding: 10px 20px; border-radius: 20px; z-index: 1000; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div id="app-shell">
+        <header>
+            <h2 style="font-weight:900">TAP<span style="color:var(--s)">VERSE</span></h2>
+            <div style="display:flex; gap:10px">
+                <div class="xp-pill">
+                    <div style="font-size:0.6rem">LVL <span id="ui-lvl">1</span></div>
+                    <div class="xp-track"><div id="ui-xp-bar"></div></div>
+                </div>
+                <div class="hud-item" style="color:var(--gold)"><i class="fas fa-coins"></i> <span id="ui-coins">0</span></div>
+            </div>
+        </header>
+        <main id="main-menu"></main>
+    </div>
+
+    <div id="stage">
+        <canvas id="game-canvas"></canvas>
+        <div class="hud">
+            <div class="hud-item">SCORE: <span id="ui-score">0</span></div>
+            <button class="hud-item" style="border:none; color:#fff" onclick="App.quit()">EXIT</button>
+        </div>
+        <div id="game-over-overlay" class="overlay">
+            <div class="modal">
+                <h1 id="res-title">GAME OVER</h1>
+                <p id="res-stats" style="margin:15px 0"></p>
+                <button class="btn" onclick="App.restart()">RETRY</button>
+                <button class="btn" style="background:#444" onclick="App.quit()">MENU</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const Storage = {
+            db: { coins: 0, xp: 0, level: 1, unlocked: ['dodge', 'pop'] },
+            init() {
+                const saved = localStorage.getItem('tv_data');
+                if(saved) this.db = Object.assign(this.db, JSON.parse(saved));
+                this.sync();
+            },
+            save() { localStorage.setItem('tv_data', JSON.stringify(this.db)); this.sync(); },
+            sync() {
+                document.getElementById('ui-coins').innerText = this.db.coins;
+                document.getElementById('ui-lvl').innerText = this.db.level;
+                const nextXP = Math.pow(this.db.level, 1.6) * 500;
+                const prevXP = this.db.level === 1 ? 0 : Math.pow(this.db.level - 1, 1.6) * 500;
+                const prog = ((this.db.xp - prevXP) / (nextXP - prevXP)) * 100;
+                document.getElementById('ui-xp-bar').style.transform = `scaleX(${Math.max(0, prog/100)})`;
+            }
+        };
+
+        const FX = {
+            pool: Array.from({length: 50}, () => ({x:0, y:0, vx:0, vy:0, l:0})),
+            spawn(x, y, color) {
+                this.pool.filter(p => p.l <= 0).slice(0, 8).forEach(p => {
+                    p.x = x; p.y = y; p.c = color; p.l = 1;
+                    p.vx = (Math.random()-0.5)*10; p.vy = (Math.random()-0.5)*10;
+                });
+            },
+            draw(dt, ctx) {
+                this.pool.forEach(p => {
+                    if(p.l <= 0) return;
+                    p.x += p.vx; p.y += p.vy; p.l -= dt*2;
+                    ctx.globalAlpha = p.l; ctx.fillStyle = p.c;
+                    ctx.fillRect(p.x, p.y, 4, 4);
+                });
+                ctx.globalAlpha = 1;
+            }
+        };
+
+        class Dodger {
+            constructor(c) { this.cvs = c; this.id = 'dodge'; }
+            init() { this.score = 0; this.isDead = false; this.p = {x:this.cvs.width/2, tx:this.cvs.width/2}; this.e = []; this.t = 0; }
+            update(dt) {
+                this.p.x += (this.p.tx - this.p.x) * 0.2;
+                this.t += dt; if(this.t > 0.5) { this.e.push({x:Math.random()*this.cvs.width, y:-20}); this.t = 0; }
+                this.e.forEach((en, i) => {
+                    en.y += 300 * dt;
+                    if(Math.hypot(en.x - this.p.x, en.y - (this.cvs.height-80)) < 25) this.isDead = true;
+                    if(en.y > this.cvs.height) { this.e.splice(i,1); this.score += 10; }
+                });
+            }
+            draw(ctx) {
+                ctx.fillStyle = 'cyan'; ctx.beginPath(); ctx.arc(this.p.x, this.cvs.height-80, 15, 0, 7); ctx.fill();
+                ctx.fillStyle = 'red'; this.e.forEach(en => ctx.fillRect(en.x-15, en.y-15, 30, 30));
+            }
+        }
+
+        class OrbPop {
+            constructor(c) { this.cvs = c; this.id = 'pop'; }
+            init() { this.score = 0; this.isDead = false; this.orbs = []; this.t = 0; }
+            update(dt) {
+                this.t += dt; if(this.t > 0.7) { this.orbs.push({x:Math.random()*this.cvs.width, y:Math.random()*this.cvs.height, l:1.5}); this.t = 0; }
+                this.orbs.forEach((o, i) => { o.l -= dt; if(o.l <= 0) this.isDead = true; });
+            }
+            draw(ctx) {
+                this.orbs.forEach(o => { ctx.fillStyle = 'magenta'; ctx.globalAlpha = o.l/1.5; ctx.beginPath(); ctx.arc(o.x, o.y, 30, 0, 7); ctx.fill(); });
+            }
+        }
+
+        const App = {
+            init() {
+                this.canvas = document.getElementById('game-canvas');
+                this.ctx = this.canvas.getContext('2d');
+                Storage.init(); this.renderMenu();
+                window.onresize = () => { this.canvas.width = window.innerWidth; this.canvas.height = window.innerHeight; };
+                window.onresize();
+                
+                const input = (e) => { 
+                    const x = e.touches ? e.touches[0].clientX : e.clientX;
+                    const y = e.touches ? e.touches[0].clientY : e.clientY;
+                    if(this.activeGame?.id === 'dodge') this.activeGame.p.tx = x;
+                    if(this.activeGame?.id === 'pop') {
+                        this.activeGame.orbs.forEach((o, i) => {
+                            if(Math.hypot(o.x - x, o.y - y) < 40) { FX.spawn(o.x, o.y, 'magenta'); this.activeGame.orbs.splice(i, 1); this.activeGame.score += 20; }
+                        });
+                    }
+                };
+                this.canvas.addEventListener('mousemove', input);
+                this.canvas.addEventListener('touchstart', input);
+                this
